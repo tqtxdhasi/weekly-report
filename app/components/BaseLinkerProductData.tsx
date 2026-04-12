@@ -95,11 +95,11 @@ export default function BaseLinkerProductData() {
               let locationValues: string[] = [];
               if (Array.isArray(locationsObj)) {
                 locationValues = locationsObj.filter(
-                  (l) => l && typeof l === "string",
+                  (l): l is string => typeof l === "string",
                 );
               } else {
                 locationValues = Object.values(locationsObj).filter(
-                  (l) => l && typeof l === "string",
+                  (l): l is string => typeof l === "string",
                 );
               }
               const unique = [...new Set(locationValues)];
