@@ -22,11 +22,23 @@ export default function BaseLinkerProductData() {
     Record<number, number>
   >({});
   const [showReservedOnly, setShowReservedOnly] = useState(false);
-  const [hideZeroActualStock, setHideZeroActualStock] = useState(false); // NEW
+  const [hideZeroActualStock, setHideZeroActualStock] = useState(false);
+  // NEW: hide Amazon, Shopify, OnBuy price columns
+  const [hideMarketplacePrices, setHideMarketplacePrices] = useState(false);
 
   const priceGroups = HARDCODED_PRICE_GROUPS.price_groups;
   const warehouses = HARDCODED_WAREHOUSES.warehouses;
   const orderStatuses = HARDCODED_ORDER_STATUSES.statuses;
+
+  // Price groups to hide when toggle is active
+  const MARKETPLACE_PRICE_GROUP_IDS = [9733, 9734, 9735]; // Amazon, Shopify, OnBuy
+
+  const visiblePriceGroups = useMemo(() => {
+    if (!hideMarketplacePrices) return priceGroups;
+    return priceGroups.filter(
+      (pg) => !MARKETPLACE_PRICE_GROUP_IDS.includes(pg.price_group_id),
+    );
+  }, [priceGroups, hideMarketplacePrices]);
 
   // 1. Get inventory ID
   useEffect(() => {
@@ -319,7 +331,7 @@ export default function BaseLinkerProductData() {
             Actual Stock = Warehouse Stock + Reserved (from open orders)
           </p>
         </div>
-        <div className="flex gap-4">
+        <div className="flex gap-4 flex-wrap">
           <label className="flex items-center gap-2 bg-gray-800 px-3 py-1 rounded">
             <input
               type="checkbox"
@@ -329,7 +341,6 @@ export default function BaseLinkerProductData() {
             />
             <span>Show only reserved products</span>
           </label>
-          {/* NEW TOGGLE */}
           <label className="flex items-center gap-2 bg-gray-800 px-3 py-1 rounded">
             <input
               type="checkbox"
@@ -338,6 +349,16 @@ export default function BaseLinkerProductData() {
               className="w-4 h-4"
             />
             <span>Hide zero actual stock</span>
+          </label>
+          {/* NEW TOGGLE: hide Amazon/Shopify/OnBuy price columns */}
+          <label className="flex items-center gap-2 bg-gray-800 px-3 py-1 rounded">
+            <input
+              type="checkbox"
+              checked={hideMarketplacePrices}
+              onChange={(e) => setHideMarketplacePrices(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <span>Hide Amazon / Shopify / OnBuy prices</span>
           </label>
         </div>
       </div>
@@ -378,7 +399,7 @@ export default function BaseLinkerProductData() {
                 <th className="px-4 py-2 border">EAN</th>
                 <th className="px-4 py-2 border">SKU</th>
                 <th className="px-4 py-2 border">Location(s)</th>
-                {priceGroups.map((pg) => (
+                {visiblePriceGroups.map((pg) => (
                   <th key={pg.price_group_id} className="px-4 py-2 border">
                     {pg.name} ({pg.currency})
                   </th>
@@ -414,7 +435,7 @@ export default function BaseLinkerProductData() {
                     <td className="px-4 py-2 border">
                       {locationMap[product.product_id] || "—"}
                     </td>
-                    {priceGroups.map((pg) => (
+                    {visiblePriceGroups.map((pg) => (
                       <td
                         key={pg.price_group_id}
                         className="px-4 py-2 border text-right"
