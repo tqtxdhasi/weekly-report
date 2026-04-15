@@ -9,9 +9,15 @@ import {
 import { useState, useEffect, useCallback, useMemo } from "react";
 
 const PAGE_LIMIT = 200;
+const CACHE_KEYS = {
+  PRODUCTS: "baselinker_products",
+  LOCATIONS: "baselinker_locations",
+  RESERVED: "baselinker_reserved",
+  LAST_SYNC: "baselinker_last_sync",
+};
 
 export default function BaseLinkerProductData() {
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [allProducts, setAllProducts] = useState<any[]>([]);
   const [inventoryId, setInventoryId] = useState<number | null>(null);
@@ -23,15 +29,13 @@ export default function BaseLinkerProductData() {
   >({});
   const [showReservedOnly, setShowReservedOnly] = useState(false);
   const [hideZeroActualStock, setHideZeroActualStock] = useState(false);
-  // NEW: hide Amazon, Shopify, OnBuy price columns
   const [hideMarketplacePrices, setHideMarketplacePrices] = useState(false);
+  const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
 
   const priceGroups = HARDCODED_PRICE_GROUPS.price_groups;
   const warehouses = HARDCODED_WAREHOUSES.warehouses;
   const orderStatuses = HARDCODED_ORDER_STATUSES.statuses;
-
-  // Price groups to hide when toggle is active
-  const MARKETPLACE_PRICE_GROUP_IDS = [9733, 9734, 9735]; // Amazon, Shopify, OnBuy
+  const MARKETPLACE_PRICE_GROUP_IDS = [9733, 9734, 9735];
 
   const visiblePriceGroups = useMemo(() => {
     if (!hideMarketplacePrices) return priceGroups;
@@ -40,7 +44,7 @@ export default function BaseLinkerProductData() {
     );
   }, [priceGroups, hideMarketplacePrices]);
 
-  // 1. Get inventory ID
+  // 1. Get inventory ID (cheap, always fetch on mount)
   useEffect(() => {
     async function fetchInventoryId() {
       try {
@@ -63,9 +67,20 @@ export default function BaseLinkerProductData() {
       }
     }
     fetchInventoryId();
+
+    // Load cached data from localStorage
+    const cachedProducts = localStorage.getItem(CACHE_KEYS.PRODUCTS);
+    const cachedLocations = localStorage.getItem(CACHE_KEYS.LOCATIONS);
+    const cachedReserved = localStorage.getItem(CACHE_KEYS.RESERVED);
+    const cachedLastSync = localStorage.getItem(CACHE_KEYS.LAST_SYNC);
+
+    if (cachedProducts) setAllProducts(JSON.parse(cachedProducts));
+    if (cachedLocations) setLocationMap(JSON.parse(cachedLocations));
+    if (cachedReserved) setReservedQuantities(JSON.parse(cachedReserved));
+    if (cachedLastSync) setLastSyncTime(cachedLastSync);
   }, []);
 
-  // 2. Fetch locations for a batch of product IDs
+  // Helper: fetch details batch (locations)
   const fetchDetailsBatch = useCallback(
     async (productIds: number[]): Promise<Record<string, string>> => {
       if (!inventoryId || productIds.length === 0) return {};
@@ -130,7 +145,7 @@ export default function BaseLinkerProductData() {
     [inventoryId],
   );
 
-  // 3. Fetch all products (all pages)
+  // Fetch all products (paginated)
   const fetchAllProducts = useCallback(async () => {
     if (!inventoryId) return [];
     let page = 1;
@@ -167,10 +182,10 @@ export default function BaseLinkerProductData() {
     return allProductsData;
   }, [inventoryId]);
 
-  // 4. Fetch locations for all products (batched)
+  // Fetch locations for all products (batched)
   const fetchAllLocations = useCallback(
     async (products: any[]) => {
-      if (products.length === 0) return;
+      if (products.length === 0) return {};
       setFetchingLocations(true);
       const productIds = products.map((p) => p.product_id);
       const BATCH_SIZE = 50;
@@ -185,13 +200,13 @@ export default function BaseLinkerProductData() {
         (acc, batchLocs) => ({ ...acc, ...batchLocs }),
         {},
       );
-      setLocationMap(combinedLocations);
       setFetchingLocations(false);
+      return combinedLocations;
     },
     [fetchDetailsBatch],
   );
 
-  // 5. Fetch reserved quantities from orders (using variant product_id)
+  // Fetch reserved quantities from orders
   const fetchReservedQuantities = useCallback(async () => {
     setFetchingOrders(true);
     const reserved: Record<number, number> = {};
@@ -235,28 +250,39 @@ export default function BaseLinkerProductData() {
     };
 
     await Promise.all(orderStatuses.map((s) => fetchAllOrdersForStatus(s.id)));
-    setReservedQuantities(reserved);
     setFetchingOrders(false);
+    return reserved;
   }, [orderStatuses]);
 
-  // 6. Initial load: fetch all products, then locations, then reserved quantities
-  useEffect(() => {
-    if (!inventoryId) return;
-    async function loadEverything() {
-      setLoading(true);
-      setError(null);
-      try {
-        const products = await fetchAllProducts();
-        setAllProducts(products);
-        await fetchAllLocations(products);
-        await fetchReservedQuantities();
-      } catch (err: any) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
+  // Main sync function
+  const syncData = useCallback(async () => {
+    if (!inventoryId) {
+      setError("Inventory ID not available yet.");
+      return;
     }
-    loadEverything();
+    setLoading(true);
+    setError(null);
+    try {
+      const products = await fetchAllProducts();
+      const locations = await fetchAllLocations(products);
+      const reserved = await fetchReservedQuantities();
+
+      setAllProducts(products);
+      setLocationMap(locations);
+      setReservedQuantities(reserved);
+
+      // Save to localStorage
+      localStorage.setItem(CACHE_KEYS.PRODUCTS, JSON.stringify(products));
+      localStorage.setItem(CACHE_KEYS.LOCATIONS, JSON.stringify(locations));
+      localStorage.setItem(CACHE_KEYS.RESERVED, JSON.stringify(reserved));
+      const now = new Date().toLocaleString();
+      setLastSyncTime(now);
+      localStorage.setItem(CACHE_KEYS.LAST_SYNC, now);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   }, [
     inventoryId,
     fetchAllProducts,
@@ -264,7 +290,7 @@ export default function BaseLinkerProductData() {
     fetchReservedQuantities,
   ]);
 
-  // Helper functions
+  // Helper: get price
   const getProductPriceForGroup = (
     product: any,
     priceGroupId: number,
@@ -276,10 +302,7 @@ export default function BaseLinkerProductData() {
     return "—";
   };
 
-  const getWarehouseQuantity = (
-    product: any,
-    warehouse: (typeof warehouses)[0],
-  ): number => {
+  const getWarehouseQuantity = (product: any, warehouse: any): number => {
     const stock = product.stock || {};
     const rawKey = `${warehouse.warehouse_type}_${warehouse.warehouse_id}`;
     return stock[rawKey] ?? stock[warehouse.warehouse_id.toString()] ?? 0;
@@ -302,7 +325,7 @@ export default function BaseLinkerProductData() {
     return totalStock + reserved;
   };
 
-  // Filter products: first by reserved-only, then by hideZeroActualStock
+  // Filter and sort by location
   const filteredProducts = useMemo(() => {
     let products = showReservedOnly
       ? allProducts.filter(
@@ -314,75 +337,169 @@ export default function BaseLinkerProductData() {
       products = products.filter((product) => getActualStock(product) !== 0);
     }
 
-    // Sort alphabetically by product name (case-insensitive)
     return [...products].sort((a, b) => {
+      const locA = (locationMap[a.product_id] || "—").toLowerCase();
+      const locB = (locationMap[b.product_id] || "—").toLowerCase();
+      const locCompare = locA.localeCompare(locB);
+      if (locCompare !== 0) return locCompare;
       const nameA = (a.name || "").toLowerCase();
       const nameB = (b.name || "").toLowerCase();
       return nameA.localeCompare(nameB);
     });
-  }, [allProducts, showReservedOnly, hideZeroActualStock, reservedQuantities]);
+  }, [
+    allProducts,
+    showReservedOnly,
+    hideZeroActualStock,
+    reservedQuantities,
+    locationMap,
+  ]);
+
+  // Export to CSV
+  const exportToCSV = () => {
+    if (filteredProducts.length === 0) {
+      alert("No data to export.");
+      return;
+    }
+
+    // Prepare headers
+    const headers = [
+      "Product ID",
+      "Product Name",
+      "EAN",
+      "SKU",
+      "Location(s)",
+      ...visiblePriceGroups.map((pg) => `${pg.name} (${pg.currency})`),
+      ...warehouses.map((wh) => wh.name),
+      "Reserved (orders)",
+      "Total Actual Stock",
+    ];
+
+    const rows = filteredProducts.map((product) => {
+      const row = [
+        product.product_id,
+        product.name || "—",
+        product.ean || "—",
+        product.sku || "—",
+        locationMap[product.product_id] || "—",
+        ...visiblePriceGroups.map((pg) =>
+          getProductPriceForGroup(product, pg.price_group_id),
+        ),
+        ...warehouses.map((wh) => getWarehouseQuantity(product, wh)),
+        getReservedQuantity(product.product_id),
+        getActualStock(product),
+      ];
+      return row;
+    });
+
+    const csvContent = [headers, ...rows]
+      .map((row) =>
+        row
+          .map((cell) =>
+            typeof cell === "string" &&
+            (cell.includes(",") || cell.includes('"'))
+              ? `"${cell.replace(/"/g, '""')}"`
+              : cell,
+          )
+          .join(","),
+      )
+      .join("\n");
+
+    const blob = new Blob(["\uFEFF" + csvContent], {
+      type: "text/csv;charset=utf-8;",
+    });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.href = url;
+    link.setAttribute("download", "baselinker_products.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div>
-      <div className="mb-4 flex justify-between items-center">
+      <div className="mb-4 flex justify-between items-center flex-wrap gap-2">
         <div>
           <h1 className="text-2xl font-bold">📦 BaseLinker Product Data</h1>
           <p className="text-sm text-gray-400 mt-1">
             Actual Stock = Warehouse Stock + Reserved (from open orders)
           </p>
+          {lastSyncTime && (
+            <p className="text-xs text-gray-500 mt-1">
+              Last sync: {lastSyncTime}
+            </p>
+          )}
         </div>
-        <div className="flex gap-4 flex-wrap">
-          <label className="flex items-center gap-2 bg-gray-800 px-3 py-1 rounded">
-            <input
-              type="checkbox"
-              checked={showReservedOnly}
-              onChange={(e) => setShowReservedOnly(e.target.checked)}
-              className="w-4 h-4"
-            />
-            <span>Show only reserved products</span>
-          </label>
-          <label className="flex items-center gap-2 bg-gray-800 px-3 py-1 rounded">
-            <input
-              type="checkbox"
-              checked={hideZeroActualStock}
-              onChange={(e) => setHideZeroActualStock(e.target.checked)}
-              className="w-4 h-4"
-            />
-            <span>Hide zero actual stock</span>
-          </label>
-          {/* NEW TOGGLE: hide Amazon/Shopify/OnBuy price columns */}
-          <label className="flex items-center gap-2 bg-gray-800 px-3 py-1 rounded">
-            <input
-              type="checkbox"
-              checked={hideMarketplacePrices}
-              onChange={(e) => setHideMarketplacePrices(e.target.checked)}
-              className="w-4 h-4"
-            />
-            <span>Hide Amazon / Shopify / OnBuy prices</span>
-          </label>
+        <div className="flex gap-2">
+          <button
+            onClick={syncData}
+            disabled={loading}
+            className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-4 py-2 rounded font-semibold"
+          >
+            {loading ? "Syncing..." : "🔄 Sync Data"}
+          </button>
+          <button
+            onClick={exportToCSV}
+            disabled={filteredProducts.length === 0}
+            className="bg-green-600 hover:bg-green-700 disabled:opacity-50 px-4 py-2 rounded font-semibold"
+          >
+            📥 Export CSV
+          </button>
         </div>
       </div>
 
-      {loading && <div className="p-3 bg-gray-900">⏳ Loading products...</div>}
-      {fetchingLocations && !loading && (
-        <div className="p-3 bg-yellow-100 text-black">
-          📍 Fetching locations...
-        </div>
-      )}
-      {fetchingOrders && !loading && !fetchingLocations && (
-        <div className="p-3 bg-yellow-100 text-black">
-          📦 Fetching reserved quantities from orders...
+      <div className="mb-4 flex gap-4 flex-wrap">
+        <label className="flex items-center gap-2 bg-gray-800 px-3 py-1 rounded">
+          <input
+            type="checkbox"
+            checked={showReservedOnly}
+            onChange={(e) => setShowReservedOnly(e.target.checked)}
+            className="w-4 h-4"
+          />
+          <span>Show only reserved products</span>
+        </label>
+        <label className="flex items-center gap-2 bg-gray-800 px-3 py-1 rounded">
+          <input
+            type="checkbox"
+            checked={hideZeroActualStock}
+            onChange={(e) => setHideZeroActualStock(e.target.checked)}
+            className="w-4 h-4"
+          />
+          <span>Hide zero actual stock</span>
+        </label>
+        <label className="flex items-center gap-2 bg-gray-800 px-3 py-1 rounded">
+          <input
+            type="checkbox"
+            checked={hideMarketplacePrices}
+            onChange={(e) => setHideMarketplacePrices(e.target.checked)}
+            className="w-4 h-4"
+          />
+          <span>Hide Amazon / Shopify / OnBuy prices</span>
+        </label>
+      </div>
+
+      {(loading || fetchingLocations || fetchingOrders) && (
+        <div className="p-3 bg-gray-900">
+          {loading && "⏳ Loading products..."}
+          {fetchingLocations && !loading && "📍 Fetching locations..."}
+          {fetchingOrders &&
+            !loading &&
+            !fetchingLocations &&
+            "📦 Fetching reserved quantities from orders..."}
         </div>
       )}
       {error && <div className="p-3 bg-red-100 text-red-800">❌ {error}</div>}
 
       {!loading && !error && filteredProducts.length === 0 && (
         <div className="p-3 bg-yellow-100 text-black">
-          {showReservedOnly
-            ? "No products with reserved quantities found."
-            : hideZeroActualStock
-              ? "No products with non‑zero actual stock found."
-              : "No products found."}
+          {allProducts.length === 0
+            ? "No data. Click 'Sync Data' to load products."
+            : showReservedOnly
+              ? "No products with reserved quantities found."
+              : hideZeroActualStock
+                ? "No products with non‑zero actual stock found."
+                : "No products found."}
         </div>
       )}
 
