@@ -10,16 +10,27 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 
 const PAGE_LIMIT = 200;
 const CACHE_KEYS = {
-  PRODUCTS: "baselinker_products",
+  ROWS: "baselinker_rows", // flattened DisplayRow[]
   LOCATIONS: "baselinker_locations",
   RESERVED: "baselinker_reserved",
   LAST_SYNC: "baselinker_last_sync",
 };
 
+interface DisplayRow {
+  rowId: string;
+  product_id: number;
+  parent_id: number | null;
+  name: string;
+  ean: string;
+  sku: string;
+  prices: Record<string, number>;
+  stock: Record<string, number>;
+}
+
 export default function BaseLinkerProductData() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [allProducts, setAllProducts] = useState<any[]>([]);
+  const [allRows, setAllRows] = useState<DisplayRow[]>([]);
   const [inventoryId, setInventoryId] = useState<number | null>(null);
   const [locationMap, setLocationMap] = useState<Record<string, string>>({});
   const [fetchingLocations, setFetchingLocations] = useState(false);
@@ -44,7 +55,7 @@ export default function BaseLinkerProductData() {
     );
   }, [priceGroups, hideMarketplacePrices]);
 
-  // 1. Get inventory ID (cheap, always fetch on mount)
+  // Load cached data on mount
   useEffect(() => {
     async function fetchInventoryId() {
       try {
@@ -68,90 +79,86 @@ export default function BaseLinkerProductData() {
     }
     fetchInventoryId();
 
-    // Load cached data from localStorage
-    const cachedProducts = localStorage.getItem(CACHE_KEYS.PRODUCTS);
+    // Load cached flattened data
+    const cachedRows = localStorage.getItem(CACHE_KEYS.ROWS);
     const cachedLocations = localStorage.getItem(CACHE_KEYS.LOCATIONS);
     const cachedReserved = localStorage.getItem(CACHE_KEYS.RESERVED);
     const cachedLastSync = localStorage.getItem(CACHE_KEYS.LAST_SYNC);
 
-    if (cachedProducts) setAllProducts(JSON.parse(cachedProducts));
+    if (cachedRows) setAllRows(JSON.parse(cachedRows));
     if (cachedLocations) setLocationMap(JSON.parse(cachedLocations));
     if (cachedReserved) setReservedQuantities(JSON.parse(cachedReserved));
     if (cachedLastSync) setLastSyncTime(cachedLastSync);
   }, []);
 
-  // Helper: fetch details batch (locations)
-  const fetchDetailsBatch = useCallback(
-    async (productIds: number[]): Promise<Record<string, string>> => {
-      if (!inventoryId || productIds.length === 0) return {};
-      const requestBody = {
-        method: "getInventoryProductsData",
-        parameters: {
-          inventory_id: inventoryId,
-          products: productIds.map((id) => String(id)),
-        },
-      };
-      try {
-        const res = await fetch("/api/baselinker-proxy", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(requestBody),
-        });
-        const data = await res.json();
-        if (data.status === "SUCCESS" && data.products) {
-          const newLocations: Record<string, string> = {};
-          for (const [pid, details] of Object.entries(data.products)) {
-            const productDetails = details as any;
-            let locationsObj = productDetails.locations;
-            if (
-              !locationsObj &&
-              productDetails.stock &&
-              typeof productDetails.stock === "object"
-            ) {
-              const stockEntries = Object.entries(productDetails.stock);
-              const locs = stockEntries
-                .map(([key, val]: [string, any]) => {
-                  if (val && typeof val === "object" && val.location)
-                    return val.location;
-                  return null;
-                })
-                .filter(Boolean);
-              if (locs.length) locationsObj = locs;
-            }
-            if (locationsObj && typeof locationsObj === "object") {
-              let locationValues: string[] = [];
-              if (Array.isArray(locationsObj)) {
-                locationValues = locationsObj.filter(
-                  (l): l is string => typeof l === "string",
-                );
-              } else {
-                locationValues = Object.values(locationsObj).filter(
-                  (l): l is string => typeof l === "string",
-                );
-              }
-              const unique = [...new Set(locationValues)];
-              newLocations[pid] = unique.join(", ") || "—";
-            } else {
-              newLocations[pid] = "—";
-            }
-          }
-          return newLocations;
-        }
-      } catch (err) {
-        console.error("Batch fetch failed:", err);
-      }
-      return {};
-    },
-    [inventoryId],
-  );
+  // Flatten products + variants into DisplayRow[]
+  const flattenProductsToRows = (products: any[]): DisplayRow[] => {
+    const rows: DisplayRow[] = [];
+    for (const product of products) {
+      // Main product row
+      rows.push({
+        rowId: `product_${product.product_id}`,
+        product_id: product.product_id,
+        parent_id: null,
+        name: product.name || "—",
+        ean: product.ean || "—",
+        sku: product.sku || "—",
+        prices: product.prices || {},
+        stock: product.stock || {},
+      });
 
-  // Fetch all products (paginated)
-  const fetchAllProducts = useCallback(async () => {
+      // Handle variants
+      if (product.variants) {
+        if (Array.isArray(product.variants)) {
+          // Array of variant objects (unlikely but keep for safety)
+          for (const variant of product.variants) {
+            const variantId =
+              variant.variant_id ?? variant.id ?? variant.product_id;
+            if (!variantId) {
+              console.warn("Variant missing ID in array:", variant);
+              continue;
+            }
+            rows.push({
+              rowId: `variant_${product.product_id}_${variantId}`,
+              product_id: variantId,
+              parent_id: product.product_id,
+              name: variant.name || product.name || "—",
+              ean: variant.ean || product.ean || "—",
+              sku: variant.sku || product.sku || "—",
+              prices: variant.prices || {},
+              stock: variant.stock || {},
+            });
+          }
+        } else if (typeof product.variants === "object") {
+          // Object keyed by variant ID – use the key as ID
+          for (const [variantId, variant] of Object.entries(product.variants)) {
+            const vId = parseInt(variantId, 10);
+            rows.push({
+              rowId: `variant_${product.product_id}_${vId}`,
+              product_id: vId,
+              parent_id: product.product_id,
+              name: (variant as any).name || product.name || "—",
+              ean: (variant as any).ean || product.ean || "—",
+              sku: (variant as any).sku || product.sku || "—",
+              prices: (variant as any).prices || {},
+              stock: (variant as any).stock || {},
+            });
+          }
+        }
+      }
+    }
+    console.log(
+      `Flattened ${products.length} products into ${rows.length} rows (main + variants)`,
+    );
+    return rows;
+  };
+
+  // Fetch all product IDs
+  const fetchAllProductIds = useCallback(async (): Promise<number[]> => {
     if (!inventoryId) return [];
     let page = 1;
-    let allProductsData: any[] = [];
+    let allIds: number[] = [];
     let hasMore = true;
-
     while (hasMore) {
       const res = await fetch("/api/baselinker-proxy", {
         method: "POST",
@@ -163,54 +170,115 @@ export default function BaseLinkerProductData() {
       });
       const data = await res.json();
       if (data.status !== "SUCCESS" || !data.products) {
-        throw new Error(data.error_message || "Failed to fetch products.");
+        throw new Error(data.error_message || "Failed to fetch product list.");
       }
-      const productsPage = Object.entries(data.products).map(
-        ([id, product]) => ({
-          ...(product as any),
-          product_id: parseInt(id, 10),
-        }),
-      );
-      if (productsPage.length === 0) {
+      const ids = Object.keys(data.products).map((id) => parseInt(id, 10));
+      if (ids.length === 0) {
         hasMore = false;
       } else {
-        allProductsData.push(...productsPage);
+        allIds.push(...ids);
         page++;
-        if (productsPage.length < PAGE_LIMIT) hasMore = false;
+        if (ids.length < PAGE_LIMIT) hasMore = false;
       }
     }
-    return allProductsData;
+    return allIds;
   }, [inventoryId]);
 
-  // Fetch locations for all products (batched)
-  const fetchAllLocations = useCallback(
-    async (products: any[]) => {
-      if (products.length === 0) return {};
-      setFetchingLocations(true);
-      const productIds = products.map((p) => p.product_id);
+  // Fetch full product details (including variants)
+  const fetchFullProductDetails = useCallback(
+    async (productIds: number[]): Promise<any[]> => {
+      if (!inventoryId || productIds.length === 0) return [];
       const BATCH_SIZE = 50;
       const batches: number[][] = [];
       for (let i = 0; i < productIds.length; i += BATCH_SIZE) {
         batches.push(productIds.slice(i, i + BATCH_SIZE));
       }
-      const allLocationBatches = await Promise.all(
-        batches.map((batch) => fetchDetailsBatch(batch)),
-      );
-      const combinedLocations = allLocationBatches.reduce(
-        (acc, batchLocs) => ({ ...acc, ...batchLocs }),
-        {},
-      );
-      setFetchingLocations(false);
-      return combinedLocations;
+      const allProductsData: any[] = [];
+      for (const batch of batches) {
+        const res = await fetch("/api/baselinker-proxy", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            method: "getInventoryProductsData",
+            parameters: {
+              inventory_id: inventoryId,
+              products: batch.map((id) => String(id)),
+            },
+          }),
+        });
+        const data = await res.json();
+        if (data.status === "SUCCESS" && data.products) {
+          for (const [id, productData] of Object.entries(data.products)) {
+            allProductsData.push({
+              ...(productData as any),
+              product_id: parseInt(id, 10),
+            });
+          }
+        }
+      }
+      return allProductsData;
     },
-    [fetchDetailsBatch],
+    [inventoryId],
   );
 
-  // Fetch reserved quantities from orders
+  // Extract location map from full product details
+  const extractLocationMap = (
+    productsDetails: any[],
+  ): Record<string, string> => {
+    const map: Record<string, string> = {};
+    const processItem = (item: any, id: number) => {
+      let locationsObj = item.locations;
+      if (!locationsObj && item.stock && typeof item.stock === "object") {
+        const stockEntries = Object.entries(item.stock);
+        const locs = stockEntries
+          .map(([key, val]: [string, any]) => {
+            if (val && typeof val === "object" && val.location)
+              return val.location;
+            return null;
+          })
+          .filter(Boolean);
+        if (locs.length) locationsObj = locs;
+      }
+      if (locationsObj && typeof locationsObj === "object") {
+        let locationValues: string[] = [];
+        if (Array.isArray(locationsObj)) {
+          locationValues = locationsObj.filter(
+            (l): l is string => typeof l === "string",
+          );
+        } else {
+          locationValues = Object.values(locationsObj).filter(
+            (l): l is string => typeof l === "string",
+          );
+        }
+        const unique = [...new Set(locationValues)];
+        map[id] = unique.join(", ") || "—";
+      } else {
+        map[id] = "—";
+      }
+    };
+
+    for (const product of productsDetails) {
+      processItem(product, product.product_id);
+      if (product.variants) {
+        if (Array.isArray(product.variants)) {
+          for (const variant of product.variants) {
+            const variantId =
+              variant.variant_id ?? variant.id ?? variant.product_id;
+            if (variantId) processItem(variant, variantId);
+          }
+        } else if (typeof product.variants === "object") {
+          for (const [variantId, variant] of Object.entries(product.variants)) {
+            processItem(variant as any, parseInt(variantId, 10));
+          }
+        }
+      }
+    }
+    return map;
+  };
+  // Fetch reserved quantities
   const fetchReservedQuantities = useCallback(async () => {
     setFetchingOrders(true);
     const reserved: Record<number, number> = {};
-
     const fetchAllOrdersForStatus = async (statusId: number) => {
       let page = 1;
       let hasMore = true;
@@ -248,7 +316,6 @@ export default function BaseLinkerProductData() {
         page++;
       }
     };
-
     await Promise.all(orderStatuses.map((s) => fetchAllOrdersForStatus(s.id)));
     setFetchingOrders(false);
     return reserved;
@@ -263,16 +330,28 @@ export default function BaseLinkerProductData() {
     setLoading(true);
     setError(null);
     try {
-      const products = await fetchAllProducts();
-      const locations = await fetchAllLocations(products);
+      const productIds = await fetchAllProductIds();
+      if (productIds.length === 0) {
+        setError("No products found.");
+        return;
+      }
+      const productDetails = await fetchFullProductDetails(productIds);
+      const locations = extractLocationMap(productDetails);
       const reserved = await fetchReservedQuantities();
+      const rows = flattenProductsToRows(productDetails);
+      console.log(
+        "Sample product with variants:",
+        productDetails.find(
+          (p) => p.variants && Object.keys(p.variants).length > 0,
+        ),
+      );
 
-      setAllProducts(products);
+      setAllRows(rows);
       setLocationMap(locations);
       setReservedQuantities(reserved);
 
-      // Save to localStorage
-      localStorage.setItem(CACHE_KEYS.PRODUCTS, JSON.stringify(products));
+      // Store ONLY flattened data (small)
+      localStorage.setItem(CACHE_KEYS.ROWS, JSON.stringify(rows));
       localStorage.setItem(CACHE_KEYS.LOCATIONS, JSON.stringify(locations));
       localStorage.setItem(CACHE_KEYS.RESERVED, JSON.stringify(reserved));
       const now = new Date().toLocaleString();
@@ -285,32 +364,34 @@ export default function BaseLinkerProductData() {
     }
   }, [
     inventoryId,
-    fetchAllProducts,
-    fetchAllLocations,
+    fetchAllProductIds,
+    fetchFullProductDetails,
     fetchReservedQuantities,
   ]);
 
-  // Helper: get price
+  // Helper functions
   const getProductPriceForGroup = (
-    product: any,
+    row: DisplayRow,
     priceGroupId: number,
   ): string => {
-    if (product.prices && typeof product.prices === "object") {
-      const price = product.prices[priceGroupId.toString()];
-      if (price !== undefined && price !== null) return price.toFixed(2);
+    const price = row.prices?.[priceGroupId.toString()];
+    if (price !== undefined && price !== null) {
+      // Convert string to number if necessary
+      const numPrice = typeof price === "string" ? parseFloat(price) : price;
+      if (!isNaN(numPrice)) return numPrice.toFixed(2);
     }
     return "—";
   };
 
-  const getWarehouseQuantity = (product: any, warehouse: any): number => {
-    const stock = product.stock || {};
+  const getWarehouseQuantity = (row: DisplayRow, warehouse: any): number => {
+    const stock = row.stock || {};
     const rawKey = `${warehouse.warehouse_type}_${warehouse.warehouse_id}`;
     return stock[rawKey] ?? stock[warehouse.warehouse_id.toString()] ?? 0;
   };
 
-  const getTotalWarehouseStock = (product: any): number => {
+  const getTotalWarehouseStock = (row: DisplayRow): number => {
     return warehouses.reduce(
-      (total, wh) => total + getWarehouseQuantity(product, wh),
+      (total, wh) => total + getWarehouseQuantity(row, wh),
       0,
     );
   };
@@ -319,25 +400,22 @@ export default function BaseLinkerProductData() {
     return reservedQuantities[productId] || 0;
   };
 
-  const getActualStock = (product: any): number => {
-    const totalStock = getTotalWarehouseStock(product);
-    const reserved = getReservedQuantity(product.product_id);
+  const getActualStock = (row: DisplayRow): number => {
+    const totalStock = getTotalWarehouseStock(row);
+    const reserved = getReservedQuantity(row.product_id);
     return totalStock + reserved;
   };
 
-  // Filter and sort by location
-  const filteredProducts = useMemo(() => {
-    let products = showReservedOnly
-      ? allProducts.filter(
-          (product) => getReservedQuantity(product.product_id) > 0,
-        )
-      : allProducts;
+  const filteredRows = useMemo(() => {
+    let rows = showReservedOnly
+      ? allRows.filter((row) => getReservedQuantity(row.product_id) > 0)
+      : allRows;
 
     if (hideZeroActualStock) {
-      products = products.filter((product) => getActualStock(product) !== 0);
+      rows = rows.filter((row) => getActualStock(row) !== 0);
     }
 
-    return [...products].sort((a, b) => {
+    return [...rows].sort((a, b) => {
       const locA = (locationMap[a.product_id] || "—").toLowerCase();
       const locB = (locationMap[b.product_id] || "—").toLowerCase();
       const locCompare = locA.localeCompare(locB);
@@ -347,23 +425,21 @@ export default function BaseLinkerProductData() {
       return nameA.localeCompare(nameB);
     });
   }, [
-    allProducts,
+    allRows,
     showReservedOnly,
     hideZeroActualStock,
     reservedQuantities,
     locationMap,
   ]);
 
-  // Export to CSV
   const exportToCSV = () => {
-    if (filteredProducts.length === 0) {
+    if (filteredRows.length === 0) {
       alert("No data to export.");
       return;
     }
-
-    // Prepare headers
     const headers = [
       "Product ID",
+      "Parent ID",
       "Product Name",
       "EAN",
       "SKU",
@@ -373,24 +449,20 @@ export default function BaseLinkerProductData() {
       "Reserved (orders)",
       "Total Actual Stock",
     ];
-
-    const rows = filteredProducts.map((product) => {
-      const row = [
-        product.product_id,
-        product.name || "—",
-        product.ean || "—",
-        product.sku || "—",
-        locationMap[product.product_id] || "—",
-        ...visiblePriceGroups.map((pg) =>
-          getProductPriceForGroup(product, pg.price_group_id),
-        ),
-        ...warehouses.map((wh) => getWarehouseQuantity(product, wh)),
-        getReservedQuantity(product.product_id),
-        getActualStock(product),
-      ];
-      return row;
-    });
-
+    const rows = filteredRows.map((row) => [
+      row.product_id,
+      row.parent_id ?? "",
+      row.name,
+      row.ean,
+      row.sku,
+      locationMap[row.product_id] || "—",
+      ...visiblePriceGroups.map((pg) =>
+        getProductPriceForGroup(row, pg.price_group_id),
+      ),
+      ...warehouses.map((wh) => getWarehouseQuantity(row, wh)),
+      getReservedQuantity(row.product_id),
+      getActualStock(row),
+    ]);
     const csvContent = [headers, ...rows]
       .map((row) =>
         row
@@ -403,7 +475,6 @@ export default function BaseLinkerProductData() {
           .join(","),
       )
       .join("\n");
-
     const blob = new Blob(["\uFEFF" + csvContent], {
       type: "text/csv;charset=utf-8;",
     });
@@ -421,7 +492,9 @@ export default function BaseLinkerProductData() {
     <div>
       <div className="mb-4 flex justify-between items-center flex-wrap gap-2">
         <div>
-          <h1 className="text-2xl font-bold">📦 BaseLinker Product Data</h1>
+          <h1 className="text-2xl font-bold">
+            📦 BaseLinker Product Data (with variants)
+          </h1>
           <p className="text-sm text-gray-400 mt-1">
             Actual Stock = Warehouse Stock + Reserved (from open orders)
           </p>
@@ -441,7 +514,7 @@ export default function BaseLinkerProductData() {
           </button>
           <button
             onClick={exportToCSV}
-            disabled={filteredProducts.length === 0}
+            disabled={filteredRows.length === 0}
             className="bg-green-600 hover:bg-green-700 disabled:opacity-50 px-4 py-2 rounded font-semibold"
           >
             📥 Export CSV
@@ -481,20 +554,20 @@ export default function BaseLinkerProductData() {
 
       {(loading || fetchingLocations || fetchingOrders) && (
         <div className="p-3 bg-gray-900">
-          {loading && "⏳ Loading products..."}
+          {loading && "⏳ Loading products & variants..."}
           {fetchingLocations && !loading && "📍 Fetching locations..."}
           {fetchingOrders &&
             !loading &&
             !fetchingLocations &&
-            "📦 Fetching reserved quantities from orders..."}
+            "📦 Fetching reserved quantities..."}
         </div>
       )}
       {error && <div className="p-3 bg-red-100 text-red-800">❌ {error}</div>}
 
-      {!loading && !error && filteredProducts.length === 0 && (
+      {!loading && !error && filteredRows.length === 0 && (
         <div className="p-3 bg-yellow-100 text-black">
-          {allProducts.length === 0
-            ? "No data. Click 'Sync Data' to load products."
+          {allRows.length === 0
+            ? "No data. Click 'Sync Data' to load products and variants."
             : showReservedOnly
               ? "No products with reserved quantities found."
               : hideZeroActualStock
@@ -503,7 +576,7 @@ export default function BaseLinkerProductData() {
         </div>
       )}
 
-      {!loading && !error && filteredProducts.length > 0 && (
+      {!loading && !error && filteredRows.length > 0 && (
         <div
           className="overflow-auto border rounded"
           style={{ maxHeight: "80vh" }}
@@ -512,6 +585,7 @@ export default function BaseLinkerProductData() {
             <thead className="bg-gray-800 sticky top-0">
               <tr>
                 <th className="px-4 py-2 border">Product ID</th>
+                <th className="px-4 py-2 border">Parent ID</th>
                 <th className="px-4 py-2 border">Product Name</th>
                 <th className="px-4 py-2 border">EAN</th>
                 <th className="px-4 py-2 border">SKU</th>
@@ -535,29 +609,29 @@ export default function BaseLinkerProductData() {
               </tr>
             </thead>
             <tbody>
-              {filteredProducts.map((product: any, idx: number) => {
-                const reserved = getReservedQuantity(product.product_id);
-                const actualStock = getActualStock(product);
+              {filteredRows.map((row) => {
+                const reserved = getReservedQuantity(row.product_id);
+                const actualStock = getActualStock(row);
                 return (
-                  <tr
-                    key={product.product_id || idx}
-                    className="border hover:bg-gray-800"
-                  >
+                  <tr key={row.rowId} className="border hover:bg-gray-800">
                     <td className="px-4 py-2 border text-center">
-                      {product.product_id}
+                      {row.product_id}
                     </td>
-                    <td className="px-4 py-2 border">{product.name || "—"}</td>
-                    <td className="px-4 py-2 border">{product.ean || "—"}</td>
-                    <td className="px-4 py-2 border">{product.sku || "—"}</td>
+                    <td className="px-4 py-2 border text-center">
+                      {row.parent_id ?? "—"}
+                    </td>
+                    <td className="px-4 py-2 border">{row.name}</td>
+                    <td className="px-4 py-2 border">{row.ean}</td>
+                    <td className="px-4 py-2 border">{row.sku}</td>
                     <td className="px-4 py-2 border">
-                      {locationMap[product.product_id] || "—"}
+                      {locationMap[row.product_id] || "—"}
                     </td>
                     {visiblePriceGroups.map((pg) => (
                       <td
                         key={pg.price_group_id}
                         className="px-4 py-2 border text-right"
                       >
-                        {getProductPriceForGroup(product, pg.price_group_id)}
+                        {getProductPriceForGroup(row, pg.price_group_id)}
                       </td>
                     ))}
                     {warehouses.map((wh) => (
@@ -565,7 +639,7 @@ export default function BaseLinkerProductData() {
                         key={wh.warehouse_id}
                         className="px-4 py-2 border text-center"
                       >
-                        {getWarehouseQuantity(product, wh)}
+                        {getWarehouseQuantity(row, wh)}
                       </td>
                     ))}
                     <td className="px-4 py-2 border text-center font-bold text-yellow-300">
