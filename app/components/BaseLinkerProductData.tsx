@@ -10,7 +10,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 
 const PAGE_LIMIT = 200;
 const CACHE_KEYS = {
-  ROWS: "baselinker_rows", // flattened DisplayRow[]
+  ROWS: "baselinker_rows",
   LOCATIONS: "baselinker_locations",
   RESERVED: "baselinker_reserved",
   LAST_SYNC: "baselinker_last_sync",
@@ -27,6 +27,8 @@ interface DisplayRow {
   stock: Record<string, number>;
 }
 
+type ActualStockMode = "all" | "warehouse" | "office" | "loadingBay";
+
 export default function BaseLinkerProductData() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,11 +44,38 @@ export default function BaseLinkerProductData() {
   const [hideZeroActualStock, setHideZeroActualStock] = useState(false);
   const [hideMarketplacePrices, setHideMarketplacePrices] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
+  const [actualStockMode, setActualStockMode] =
+    useState<ActualStockMode>("all");
 
   const priceGroups = HARDCODED_PRICE_GROUPS.price_groups;
-  const warehouses = HARDCODED_WAREHOUSES.warehouses;
+  const allWarehouses = HARDCODED_WAREHOUSES.warehouses;
   const orderStatuses = HARDCODED_ORDER_STATUSES.statuses;
   const MARKETPLACE_PRICE_GROUP_IDS = [9733, 9734, 9735];
+  const getSelectedWarehouse = (mode: ActualStockMode) => {
+    switch (mode) {
+      case "warehouse":
+        return { type: "bl", id: 21879 }; // Warehouse
+      case "office":
+        return { type: "bl", id: 31472 }; // Office
+      case "loadingBay":
+        return { type: "bl", id: 27316 }; // Loading Bay
+      default:
+        return null;
+    }
+  };
+  // Determine which warehouse columns to show based on mode
+  const visibleWarehouses = useMemo(() => {
+    if (actualStockMode === "all") {
+      return allWarehouses;
+    }
+    // For specific mode, show only the selected warehouse's column
+    const selected = getSelectedWarehouse(actualStockMode);
+    if (!selected) return [];
+    return allWarehouses.filter(
+      (wh) =>
+        wh.warehouse_type === selected.type && wh.warehouse_id === selected.id,
+    );
+  }, [actualStockMode, allWarehouses]);
 
   const visiblePriceGroups = useMemo(() => {
     if (!hideMarketplacePrices) return priceGroups;
@@ -79,7 +108,6 @@ export default function BaseLinkerProductData() {
     }
     fetchInventoryId();
 
-    // Load cached flattened data
     const cachedRows = localStorage.getItem(CACHE_KEYS.ROWS);
     const cachedLocations = localStorage.getItem(CACHE_KEYS.LOCATIONS);
     const cachedReserved = localStorage.getItem(CACHE_KEYS.RESERVED);
@@ -95,7 +123,6 @@ export default function BaseLinkerProductData() {
   const flattenProductsToRows = (products: any[]): DisplayRow[] => {
     const rows: DisplayRow[] = [];
     for (const product of products) {
-      // Main product row
       rows.push({
         rowId: `product_${product.product_id}`,
         product_id: product.product_id,
@@ -107,17 +134,12 @@ export default function BaseLinkerProductData() {
         stock: product.stock || {},
       });
 
-      // Handle variants
       if (product.variants) {
         if (Array.isArray(product.variants)) {
-          // Array of variant objects (unlikely but keep for safety)
           for (const variant of product.variants) {
             const variantId =
               variant.variant_id ?? variant.id ?? variant.product_id;
-            if (!variantId) {
-              console.warn("Variant missing ID in array:", variant);
-              continue;
-            }
+            if (!variantId) continue;
             rows.push({
               rowId: `variant_${product.product_id}_${variantId}`,
               product_id: variantId,
@@ -130,7 +152,6 @@ export default function BaseLinkerProductData() {
             });
           }
         } else if (typeof product.variants === "object") {
-          // Object keyed by variant ID – use the key as ID
           for (const [variantId, variant] of Object.entries(product.variants)) {
             const vId = parseInt(variantId, 10);
             rows.push({
@@ -147,13 +168,9 @@ export default function BaseLinkerProductData() {
         }
       }
     }
-    console.log(
-      `Flattened ${products.length} products into ${rows.length} rows (main + variants)`,
-    );
     return rows;
   };
 
-  // Fetch all product IDs
   const fetchAllProductIds = useCallback(async (): Promise<number[]> => {
     if (!inventoryId) return [];
     let page = 1;
@@ -184,7 +201,6 @@ export default function BaseLinkerProductData() {
     return allIds;
   }, [inventoryId]);
 
-  // Fetch full product details (including variants)
   const fetchFullProductDetails = useCallback(
     async (productIds: number[]): Promise<any[]> => {
       if (!inventoryId || productIds.length === 0) return [];
@@ -221,7 +237,6 @@ export default function BaseLinkerProductData() {
     [inventoryId],
   );
 
-  // Extract location map from full product details
   const extractLocationMap = (
     productsDetails: any[],
   ): Record<string, string> => {
@@ -275,7 +290,7 @@ export default function BaseLinkerProductData() {
     }
     return map;
   };
-  // Fetch reserved quantities
+
   const fetchReservedQuantities = useCallback(async () => {
     setFetchingOrders(true);
     const reserved: Record<number, number> = {};
@@ -321,7 +336,6 @@ export default function BaseLinkerProductData() {
     return reserved;
   }, [orderStatuses]);
 
-  // Main sync function
   const syncData = useCallback(async () => {
     if (!inventoryId) {
       setError("Inventory ID not available yet.");
@@ -339,18 +353,11 @@ export default function BaseLinkerProductData() {
       const locations = extractLocationMap(productDetails);
       const reserved = await fetchReservedQuantities();
       const rows = flattenProductsToRows(productDetails);
-      console.log(
-        "Sample product with variants:",
-        productDetails.find(
-          (p) => p.variants && Object.keys(p.variants).length > 0,
-        ),
-      );
 
       setAllRows(rows);
       setLocationMap(locations);
       setReservedQuantities(reserved);
 
-      // Store ONLY flattened data (small)
       localStorage.setItem(CACHE_KEYS.ROWS, JSON.stringify(rows));
       localStorage.setItem(CACHE_KEYS.LOCATIONS, JSON.stringify(locations));
       localStorage.setItem(CACHE_KEYS.RESERVED, JSON.stringify(reserved));
@@ -369,14 +376,12 @@ export default function BaseLinkerProductData() {
     fetchReservedQuantities,
   ]);
 
-  // Helper functions
   const getProductPriceForGroup = (
     row: DisplayRow,
     priceGroupId: number,
   ): string => {
     const price = row.prices?.[priceGroupId.toString()];
     if (price !== undefined && price !== null) {
-      // Convert string to number if necessary
       const numPrice = typeof price === "string" ? parseFloat(price) : price;
       if (!isNaN(numPrice)) return numPrice.toFixed(2);
     }
@@ -389,22 +394,37 @@ export default function BaseLinkerProductData() {
     return stock[rawKey] ?? stock[warehouse.warehouse_id.toString()] ?? 0;
   };
 
-  const getTotalWarehouseStock = (row: DisplayRow): number => {
-    return warehouses.reduce(
-      (total, wh) => total + getWarehouseQuantity(row, wh),
-      0,
-    );
-  };
+  const getFilteredWarehouseStock = useCallback(
+    (row: DisplayRow): number => {
+      if (actualStockMode === "all") {
+        return allWarehouses.reduce(
+          (total, wh) => total + getWarehouseQuantity(row, wh),
+          0,
+        );
+      }
+      const wh = getSelectedWarehouse(actualStockMode);
+      if (!wh) return 0;
+      const matchedWh = allWarehouses.find(
+        (w) => w.warehouse_type === wh.type && w.warehouse_id === wh.id,
+      );
+      if (!matchedWh) return 0;
+      return getWarehouseQuantity(row, matchedWh);
+    },
+    [allWarehouses, actualStockMode],
+  );
 
   const getReservedQuantity = (productId: number): number => {
     return reservedQuantities[productId] || 0;
   };
 
-  const getActualStock = (row: DisplayRow): number => {
-    const totalStock = getTotalWarehouseStock(row);
-    const reserved = getReservedQuantity(row.product_id);
-    return totalStock + reserved;
-  };
+  const getActualStock = useCallback(
+    (row: DisplayRow): number => {
+      const stock = getFilteredWarehouseStock(row);
+      const reserved = getReservedQuantity(row.product_id);
+      return stock + reserved;
+    },
+    [getFilteredWarehouseStock],
+  );
 
   const filteredRows = useMemo(() => {
     let rows = showReservedOnly
@@ -430,6 +450,7 @@ export default function BaseLinkerProductData() {
     hideZeroActualStock,
     reservedQuantities,
     locationMap,
+    actualStockMode,
   ]);
 
   const exportToCSV = () => {
@@ -445,7 +466,7 @@ export default function BaseLinkerProductData() {
       "SKU",
       "Location(s)",
       ...visiblePriceGroups.map((pg) => `${pg.name} (${pg.currency})`),
-      ...warehouses.map((wh) => wh.name),
+      ...visibleWarehouses.map((wh) => wh.name),
       "Reserved (orders)",
       "Total Actual Stock",
     ];
@@ -459,7 +480,7 @@ export default function BaseLinkerProductData() {
       ...visiblePriceGroups.map((pg) =>
         getProductPriceForGroup(row, pg.price_group_id),
       ),
-      ...warehouses.map((wh) => getWarehouseQuantity(row, wh)),
+      ...visibleWarehouses.map((wh) => getWarehouseQuantity(row, wh)),
       getReservedQuantity(row.product_id),
       getActualStock(row),
     ]);
@@ -488,6 +509,19 @@ export default function BaseLinkerProductData() {
     URL.revokeObjectURL(url);
   };
 
+  const getActualStockHeaderLabel = () => {
+    switch (actualStockMode) {
+      case "warehouse":
+        return "Total Actual Stock (Warehouse only)";
+      case "office":
+        return "Total Actual Stock (Office only)";
+      case "loadingBay":
+        return "Total Actual Stock (Loading Bay only)";
+      default:
+        return "Total Actual Stock (All Warehouses)";
+    }
+  };
+
   return (
     <div>
       <div className="mb-4 flex justify-between items-center flex-wrap gap-2">
@@ -496,7 +530,8 @@ export default function BaseLinkerProductData() {
             📦 BaseLinker Product Data (with variants)
           </h1>
           <p className="text-sm text-gray-400 mt-1">
-            Actual Stock = Warehouse Stock + Reserved (from open orders)
+            Actual Stock = Selected Warehouse Stock + Reserved (from open
+            orders)
           </p>
           {lastSyncTime && (
             <p className="text-xs text-gray-500 mt-1">
@@ -550,6 +585,47 @@ export default function BaseLinkerProductData() {
           />
           <span>Hide Amazon / Shopify / OnBuy prices</span>
         </label>
+
+        {/* Radio buttons for actual stock mode */}
+        <div className="bg-gray-800 px-3 py-1 rounded flex gap-3 items-center">
+          <span className="text-sm font-semibold">Show columns for:</span>
+          <label className="flex items-center gap-1">
+            <input
+              type="radio"
+              name="actualStockMode"
+              checked={actualStockMode === "all"}
+              onChange={() => setActualStockMode("all")}
+            />
+            <span>All warehouses</span>
+          </label>
+          <label className="flex items-center gap-1">
+            <input
+              type="radio"
+              name="actualStockMode"
+              checked={actualStockMode === "warehouse"}
+              onChange={() => setActualStockMode("warehouse")}
+            />
+            <span>Warehouse only</span>
+          </label>
+          <label className="flex items-center gap-1">
+            <input
+              type="radio"
+              name="actualStockMode"
+              checked={actualStockMode === "office"}
+              onChange={() => setActualStockMode("office")}
+            />
+            <span>Office only</span>
+          </label>
+          <label className="flex items-center gap-1">
+            <input
+              type="radio"
+              name="actualStockMode"
+              checked={actualStockMode === "loadingBay"}
+              onChange={() => setActualStockMode("loadingBay")}
+            />
+            <span>Loading Bay only</span>
+          </label>
+        </div>
       </div>
 
       {(loading || fetchingLocations || fetchingOrders) && (
@@ -595,7 +671,7 @@ export default function BaseLinkerProductData() {
                     {pg.name} ({pg.currency})
                   </th>
                 ))}
-                {warehouses.map((wh) => (
+                {visibleWarehouses.map((wh) => (
                   <th key={wh.warehouse_id} className="px-4 py-2 border">
                     {wh.name}
                   </th>
@@ -604,7 +680,7 @@ export default function BaseLinkerProductData() {
                   Reserved (orders)
                 </th>
                 <th className="px-4 py-2 border bg-green-900">
-                  Total Actual Stock
+                  {getActualStockHeaderLabel()}
                 </th>
               </tr>
             </thead>
@@ -634,7 +710,7 @@ export default function BaseLinkerProductData() {
                         {getProductPriceForGroup(row, pg.price_group_id)}
                       </td>
                     ))}
-                    {warehouses.map((wh) => (
+                    {visibleWarehouses.map((wh) => (
                       <td
                         key={wh.warehouse_id}
                         className="px-4 py-2 border text-center"
