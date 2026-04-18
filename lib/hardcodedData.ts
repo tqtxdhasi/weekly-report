@@ -119,6 +119,22 @@ export const HARDCODED_ORDER_STATUSES = {
       name: "New orders",
     },
     {
+      id: 65436,
+      name: "Tracked 24 (P)",
+    },
+    {
+      id: 65437,
+      name: "Special Delivery",
+    },
+    {
+      id: 65438,
+      name: "Tracked 48 (LL)",
+    },
+    {
+      id: 101263,
+      name: "Tracked 48 (P)",
+    },
+    {
       id: 103864,
       name: "Collection",
     },
@@ -131,5 +147,13 @@ export const HARDCODED_ORDER_STATUSES = {
       name: "Dont Dispatch Yet",
     },
     { id: 129383, name: "eBay Live" },
+    {
+      id: 137207,
+      name: "Customs",
+    },
+    {
+      id: 138010,
+      name: "Tracked 24 (LL)",
+    },
   ],
 };
