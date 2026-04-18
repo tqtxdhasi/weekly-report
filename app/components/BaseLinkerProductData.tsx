@@ -424,7 +424,7 @@ export default function BaseLinkerProductData() {
       const reserved = getReservedQuantity(row.product_id);
       return stock + reserved;
     },
-    [getFilteredWarehouseStock],
+    [getFilteredWarehouseStock, reservedQuantities],
   );
 
   const filteredRows = useMemo(() => {
