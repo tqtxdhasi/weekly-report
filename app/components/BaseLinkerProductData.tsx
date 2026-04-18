@@ -399,7 +399,7 @@ export default function BaseLinkerProductData() {
     (row: DisplayRow): number => {
       if (actualStockMode === "all") {
         return allWarehouses.reduce(
-          (total, wh) => total + getWarehouseQuantity(row, wh),
+          (total, wh) => total + Number(getWarehouseQuantity(row, wh)),
           0,
         );
       }
