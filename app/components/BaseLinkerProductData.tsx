@@ -389,16 +389,17 @@ export default function BaseLinkerProductData() {
   };
 
   const getWarehouseQuantity = (row: DisplayRow, warehouse: any): number => {
-    const stock = row.stock || {};
     const rawKey = `${warehouse.warehouse_type}_${warehouse.warehouse_id}`;
-    return stock[rawKey] ?? stock[warehouse.warehouse_id.toString()] ?? 0;
+    const val =
+      row.stock?.[rawKey] ?? row.stock?.[warehouse.warehouse_id.toString()];
+    return Number(val) || 0;
   };
 
   const getFilteredWarehouseStock = useCallback(
     (row: DisplayRow): number => {
       if (actualStockMode === "all") {
         return allWarehouses.reduce(
-          (total, wh) => total + getWarehouseQuantity(row, wh),
+          (total, wh) => total + Number(getWarehouseQuantity(row, wh)),
           0,
         );
       }
