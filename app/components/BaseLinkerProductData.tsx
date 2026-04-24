@@ -509,6 +509,128 @@ export default function BaseLinkerProductData() {
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   };
+  const exportJasminCSV = () => {
+    // 1. Forced options
+    const forceHideZero = true;
+    const forceHideMarketplace = true;
+    const forceShowReservedOnly = false;
+    const forceActualStockMode: ActualStockMode = "all";
+
+    // 2. Determine visible price groups (exclude marketplace)
+    const visiblePriceGroupsJasmin = forceHideMarketplace
+      ? priceGroups.filter(
+          (pg) => !MARKETPLACE_PRICE_GROUP_IDS.includes(pg.price_group_id),
+        )
+      : priceGroups;
+
+    // 3. Determine visible warehouses (all, because actualStockMode = "all")
+    const visibleWarehousesJasmin = allWarehouses;
+
+    // 4. Helper to get warehouse quantity for a given warehouse
+    const getWarehouseQuantityLocal = (row: DisplayRow, warehouse: any) => {
+      const rawKey = `${warehouse.warehouse_type}_${warehouse.warehouse_id}`;
+      const val =
+        row.stock?.[rawKey] ?? row.stock?.[warehouse.warehouse_id.toString()];
+      return Number(val) || 0;
+    };
+
+    // 5. Helper to get filtered warehouse stock (all warehouses sum)
+    const getFilteredWarehouseStockLocal = (row: DisplayRow) => {
+      return allWarehouses.reduce(
+        (total, wh) => total + getWarehouseQuantityLocal(row, wh),
+        0,
+      );
+    };
+
+    // 6. Helper to get actual stock (all warehouses + reserved)
+    const getActualStockLocal = (row: DisplayRow) => {
+      const stock = getFilteredWarehouseStockLocal(row);
+      const reserved = reservedQuantities[row.product_id] || 0;
+      return stock + reserved;
+    };
+
+    // 7. Filter rows according to forced options
+    let jasminRows = forceShowReservedOnly
+      ? allRows.filter((row) => (reservedQuantities[row.product_id] || 0) > 0)
+      : allRows;
+
+    if (forceHideZero) {
+      jasminRows = jasminRows.filter((row) => getActualStockLocal(row) !== 0);
+    }
+
+    // 8. Sort by location then name (same as main table)
+    const sortedRows = [...jasminRows].sort((a, b) => {
+      const locA = (locationMap[a.product_id] || "—").toLowerCase();
+      const locB = (locationMap[b.product_id] || "—").toLowerCase();
+      const locCompare = locA.localeCompare(locB);
+      if (locCompare !== 0) return locCompare;
+      const nameA = (a.name || "").toLowerCase();
+      const nameB = (b.name || "").toLowerCase();
+      return nameA.localeCompare(nameB);
+    });
+
+    if (sortedRows.length === 0) {
+      alert("No data to export with JASMIN filters.");
+      return;
+    }
+
+    // 9. Build CSV headers
+    const headers = [
+      "Product ID",
+      "Parent ID",
+      "Product Name",
+      "EAN",
+      "SKU",
+      "Location(s)",
+      ...visiblePriceGroupsJasmin.map((pg) => `${pg.name} (${pg.currency})`),
+      ...visibleWarehousesJasmin.map((wh) => wh.name),
+      "Reserved (orders)",
+      "Total Actual Stock",
+    ];
+
+    // 10. Build CSV rows
+    const rows = sortedRows.map((row) => [
+      row.product_id,
+      row.parent_id ?? "",
+      row.name,
+      row.ean,
+      row.sku,
+      locationMap[row.product_id] || "—",
+      ...visiblePriceGroupsJasmin.map((pg) =>
+        getProductPriceForGroup(row, pg.price_group_id),
+      ),
+      ...visibleWarehousesJasmin.map((wh) =>
+        getWarehouseQuantityLocal(row, wh),
+      ),
+      reservedQuantities[row.product_id] || 0,
+      getActualStockLocal(row),
+    ]);
+
+    const csvContent = [headers, ...rows]
+      .map((row) =>
+        row
+          .map((cell) =>
+            typeof cell === "string" &&
+            (cell.includes(",") || cell.includes('"'))
+              ? `"${cell.replace(/"/g, '""')}"`
+              : cell,
+          )
+          .join(","),
+      )
+      .join("\n");
+
+    const blob = new Blob(["\uFEFF" + csvContent], {
+      type: "text/csv;charset=utf-8;",
+    });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.href = url;
+    link.setAttribute("download", "jasmin_export_baselinker.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   const getActualStockHeaderLabel = () => {
     switch (actualStockMode) {
@@ -554,6 +676,14 @@ export default function BaseLinkerProductData() {
             className="bg-green-600 hover:bg-green-700 disabled:opacity-50 px-4 py-2 rounded font-semibold"
           >
             📥 Export CSV
+          </button>
+          {/* NEW JASMIN EXPORT BUTTON */}
+          <button
+            onClick={exportJasminCSV}
+            disabled={allRows.length === 0}
+            className="bg-purple-600 hover:bg-purple-700 disabled:opacity-50 px-4 py-2 rounded font-semibold"
+          >
+            JASMIN Export CSV
           </button>
         </div>
       </div>
