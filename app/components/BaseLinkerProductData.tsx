@@ -120,14 +120,30 @@ export default function BaseLinkerProductData() {
   }, []);
 
   // Flatten products + variants into DisplayRow[]
+  // Helper: extract product name from API object
+  const getProductName = (item: any, fallbackId?: number): string => {
+    // Try common top-level fields
+    let name = item.name ?? item.product_name ?? item.title;
+    // If not found, look inside text_fields object
+    if (!name && item.text_fields && typeof item.text_fields === "object") {
+      name = item.text_fields.name;
+    }
+    if (name && name !== "") return name;
+    // Fallback to SKU or ID
+    if (item.sku) return `SKU: ${item.sku}`;
+    if (fallbackId) return `Product ${fallbackId}`;
+    return "—";
+  };
+
   const flattenProductsToRows = (products: any[]): DisplayRow[] => {
     const rows: DisplayRow[] = [];
     for (const product of products) {
+      const productName = getProductName(product, product.product_id);
       rows.push({
         rowId: `product_${product.product_id}`,
         product_id: product.product_id,
         parent_id: null,
-        name: product.name || "—",
+        name: productName,
         ean: product.ean || "—",
         sku: product.sku || "—",
         prices: product.prices || {},
@@ -140,11 +156,14 @@ export default function BaseLinkerProductData() {
             const variantId =
               variant.variant_id ?? variant.id ?? variant.product_id;
             if (!variantId) continue;
+            // Variant name: use variant's own name, fallback to parent's name
+            const variantName =
+              getProductName(variant, variantId) || productName;
             rows.push({
               rowId: `variant_${product.product_id}_${variantId}`,
               product_id: variantId,
               parent_id: product.product_id,
-              name: variant.name || product.name || "—",
+              name: variantName,
               ean: variant.ean || product.ean || "—",
               sku: variant.sku || product.sku || "—",
               prices: variant.prices || {},
@@ -154,11 +173,12 @@ export default function BaseLinkerProductData() {
         } else if (typeof product.variants === "object") {
           for (const [variantId, variant] of Object.entries(product.variants)) {
             const vId = parseInt(variantId, 10);
+            const variantName = getProductName(variant, vId) || productName;
             rows.push({
               rowId: `variant_${product.product_id}_${vId}`,
               product_id: vId,
               parent_id: product.product_id,
-              name: (variant as any).name || product.name || "—",
+              name: variantName,
               ean: (variant as any).ean || product.ean || "—",
               sku: (variant as any).sku || product.sku || "—",
               prices: (variant as any).prices || {},
@@ -224,6 +244,8 @@ export default function BaseLinkerProductData() {
         });
         const data = await res.json();
         if (data.status === "SUCCESS" && data.products) {
+          const firstProduct = Object.values(data.products)[0];
+          console.log("Sample product structure:", firstProduct);
           for (const [id, productData] of Object.entries(data.products)) {
             allProductsData.push({
               ...(productData as any),
