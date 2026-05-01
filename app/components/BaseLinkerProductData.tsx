@@ -536,19 +536,21 @@ export default function BaseLinkerProductData() {
     const forceHideZero = true;
     const forceHideMarketplace = true;
     const forceShowReservedOnly = false;
-    const forceActualStockMode: ActualStockMode = "all";
 
-    // 2. Determine visible price groups (exclude marketplace)
+    // 1. Price groups (exclude marketplace)
     const visiblePriceGroupsJasmin = forceHideMarketplace
       ? priceGroups.filter(
           (pg) => !MARKETPLACE_PRICE_GROUP_IDS.includes(pg.price_group_id),
         )
       : priceGroups;
 
-    // 3. Determine visible warehouses (all, because actualStockMode = "all")
-    const visibleWarehousesJasmin = allWarehouses;
+    // 2. Warehouses: ONLY Warehouse (21879) and Office (31472) for the main stock columns
+    const jasminWarehouseIds = [21879, 31472];
+    const visibleWarehousesJasmin = allWarehouses.filter((wh) =>
+      jasminWarehouseIds.includes(wh.warehouse_id),
+    );
 
-    // 4. Helper to get warehouse quantity for a given warehouse
+    // 3. Helper to get quantity for a given warehouse (handles any warehouse type)
     const getWarehouseQuantityLocal = (row: DisplayRow, warehouse: any) => {
       const rawKey = `${warehouse.warehouse_type}_${warehouse.warehouse_id}`;
       const val =
@@ -556,22 +558,22 @@ export default function BaseLinkerProductData() {
       return Number(val) || 0;
     };
 
-    // 5. Helper to get filtered warehouse stock (all warehouses sum)
+    // 4. Sum stock only from Warehouse + Office
     const getFilteredWarehouseStockLocal = (row: DisplayRow) => {
-      return allWarehouses.reduce(
+      return visibleWarehousesJasmin.reduce(
         (total, wh) => total + getWarehouseQuantityLocal(row, wh),
         0,
       );
     };
 
-    // 6. Helper to get actual stock (all warehouses + reserved)
+    // 5. Actual stock = (Warehouse+Office stock) + reserved
     const getActualStockLocal = (row: DisplayRow) => {
       const stock = getFilteredWarehouseStockLocal(row);
       const reserved = reservedQuantities[row.product_id] || 0;
       return stock + reserved;
     };
 
-    // 7. Filter rows according to forced options
+    // 6. Filter rows (no reserved‑only, hide zero actual stock)
     let jasminRows = forceShowReservedOnly
       ? allRows.filter((row) => (reservedQuantities[row.product_id] || 0) > 0)
       : allRows;
@@ -580,7 +582,7 @@ export default function BaseLinkerProductData() {
       jasminRows = jasminRows.filter((row) => getActualStockLocal(row) !== 0);
     }
 
-    // 8. Sort by location then name (same as main table)
+    // 7. Sort by location then name (same as main table)
     const sortedRows = [...jasminRows].sort((a, b) => {
       const locA = (locationMap[a.product_id] || "—").toLowerCase();
       const locB = (locationMap[b.product_id] || "—").toLowerCase();
@@ -596,7 +598,18 @@ export default function BaseLinkerProductData() {
       return;
     }
 
-    // 9. Build CSV headers
+    // 8. Define extra warehouses for additional columns
+    const loadingBayWarehouse = allWarehouses.find(
+      (wh) => wh.warehouse_type === "bl" && wh.warehouse_id === 27316,
+    ); // Loading Bay
+    const rtBytesWarehouse = allWarehouses.find(
+      (wh) => wh.warehouse_type === "fulfillment" && wh.warehouse_id === 19407,
+    ); // RT Bytes (FBA)
+    const outsideWarehouse = allWarehouses.find(
+      (wh) => wh.warehouse_type === "bl" && wh.warehouse_id === 42297,
+    ); // Outside
+
+    // 9. CSV Headers
     const headers = [
       "Product ID",
       "Parent ID",
@@ -607,26 +620,57 @@ export default function BaseLinkerProductData() {
       ...visiblePriceGroupsJasmin.map((pg) => `${pg.name} (${pg.currency})`),
       ...visibleWarehousesJasmin.map((wh) => wh.name),
       "Reserved (orders)",
-      "Total Actual Stock",
+      "Total Actual Stock (Warehouse+Office+Reserved)",
+      "Jasmin count",
+      "Match",
+      loadingBayWarehouse?.name || "Loading Bay",
+      rtBytesWarehouse?.name || "RT Bytes (FBA)",
+      outsideWarehouse?.name || "Outside",
+      "Jasmin Comments #1",
+      "Jasmin Comments #2",
+      "AJ Comments #1",
+      "AJ Comments #2",
     ];
 
-    // 10. Build CSV rows
-    const rows = sortedRows.map((row) => [
-      row.product_id,
-      row.parent_id ?? "",
-      row.name,
-      row.ean,
-      row.sku,
-      locationMap[row.product_id] || "—",
-      ...visiblePriceGroupsJasmin.map((pg) =>
-        getProductPriceForGroup(row, pg.price_group_id),
-      ),
-      ...visibleWarehousesJasmin.map((wh) =>
-        getWarehouseQuantityLocal(row, wh),
-      ),
-      reservedQuantities[row.product_id] || 0,
-      getActualStockLocal(row),
-    ]);
+    // 10. CSV Rows
+    const rows = sortedRows.map((row) => {
+      const actualStock = getActualStockLocal(row);
+      const loadingBayQty = loadingBayWarehouse
+        ? getWarehouseQuantityLocal(row, loadingBayWarehouse)
+        : 0;
+      const rtBytesQty = rtBytesWarehouse
+        ? getWarehouseQuantityLocal(row, rtBytesWarehouse)
+        : 0;
+      const outsideQty = outsideWarehouse
+        ? getWarehouseQuantityLocal(row, outsideWarehouse)
+        : 0;
+
+      return [
+        row.product_id,
+        row.parent_id ?? "",
+        row.name,
+        row.ean,
+        row.sku,
+        locationMap[row.product_id] || "—",
+        ...visiblePriceGroupsJasmin.map((pg) =>
+          getProductPriceForGroup(row, pg.price_group_id),
+        ),
+        ...visibleWarehousesJasmin.map((wh) =>
+          getWarehouseQuantityLocal(row, wh),
+        ),
+        reservedQuantities[row.product_id] || 0,
+        actualStock,
+        "", // Jasmin count (empty for now)
+        "", // Match (empty for now)
+        loadingBayQty,
+        rtBytesQty,
+        outsideQty,
+        "", // Jasmin Comments #1
+        "", // Jasmin Comments #2
+        "", // AJ Comments #1
+        "", // AJ Comments #2
+      ];
+    });
 
     const csvContent = [headers, ...rows]
       .map((row) =>
@@ -699,7 +743,6 @@ export default function BaseLinkerProductData() {
           >
             📥 Export CSV
           </button>
-          {/* NEW JASMIN EXPORT BUTTON */}
           <button
             onClick={exportJasminCSV}
             disabled={allRows.length === 0}
