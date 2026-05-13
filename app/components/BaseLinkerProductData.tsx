@@ -7,6 +7,7 @@ import {
   HARDCODED_ORDER_STATUSES,
 } from "@/lib/hardcodedData";
 import { useState, useEffect, useCallback, useMemo } from "react";
+import StockComparisonTool from "./StockComparisonTool";
 
 const PAGE_LIMIT = 200;
 const CACHE_KEYS = {
@@ -723,7 +724,7 @@ export default function BaseLinkerProductData() {
             orders)
           </p>
           {lastSyncTime && (
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-sm text-gray-300 mt-1">
               Last sync: {lastSyncTime}
             </p>
           )}
@@ -752,7 +753,14 @@ export default function BaseLinkerProductData() {
           </button>
         </div>
       </div>
-
+      <StockComparisonTool
+        allRows={allRows}
+        reservedQuantities={reservedQuantities}
+        getWarehouseQuantity={(row, type, id) => {
+          const rawKey = `${type}_${id}`;
+          return Number(row.stock?.[rawKey] ?? row.stock?.[id.toString()]) || 0;
+        }}
+      />
       <div className="mb-4 flex gap-4 flex-wrap">
         <label className="flex items-center gap-2 bg-gray-800 px-3 py-1 rounded">
           <input
