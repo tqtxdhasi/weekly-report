@@ -115,21 +115,23 @@ export default function StockComparisonTool({
     );
     const commonSkus = [...jasminSkus].filter((sku) => automationSkus.has(sku));
 
-    const mismatches: Array<any> = [];
+    const mismatches: Array<{
+      sku: string;
+      jasmin_qty: number | string;
+      automation_qty: number | string;
+      difference: number | string;
+    }> = [];
 
     for (const sku of commonSkus) {
       const jasminQty = jasminData.get(sku);
       const autoQty = automationData.get(sku);
 
-      if (jasminQty === null && autoQty === undefined) {
-        // both missing – consider match
-        continue;
-      }
-      if (jasminQty === null) {
+      if (jasminQty === undefined && autoQty === undefined) continue;
+      if (jasminQty === undefined || jasminQty === null) {
         mismatches.push({
           sku,
           jasmin_qty: "(missing)",
-          automation_qty: autoQty,
+          automation_qty: autoQty !== undefined ? autoQty : "(missing)",
           difference: "N/A",
         });
         continue;
